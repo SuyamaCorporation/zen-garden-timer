@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>禅タイマー</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen p-4">
+<div class="max-w-3xl mx-auto">
+  <h1 class="text-2xl font-bold text-center mb-2 text-stone-300">禅タイマー</h1>
+  <p class="text-center text-stone-500 text-sm mb-4">静寂とともに、心を整える</p>
+  <div class="flex flex-col lg:flex-row gap-4 items-start justify-center">
+    <div class="flex flex-col items-center gap-3">
+      <canvas id="sand" width="320" height="200"
+        class="rounded-xl border border-stone-800"
+        aria-label="砂紋アニメーション"></canvas>
+      <!-- Progress ring + timer -->
+      <div class="relative">
+        <svg width="200" height="200" aria-label="タイマー進捗リング">
+          <circle cx="100" cy="100" r="88" fill="none" stroke="#1c1917" stroke-width="10"/>
+          <circle id="progressRing" cx="100" cy="100" r="88" fill="none"
+            stroke="#78716c" stroke-width="10"
+            stroke-dasharray="553" stroke-dashoffset="553"
+            stroke-linecap="round"
+            transform="rotate(-90 100 100)"/>
+        </svg>
+        <div class="absolute inset-0 flex flex-col items-center justify-center">
+          <div id="timerDisplay" class="text-4xl font-bold font-mono text-stone-200">00:00</div>
+          <div id="phaseLabel" class="text-stone-500 text-sm mt-1">待機中</div>
+        </div>
+      </div>
+      <!-- Breathing guide -->
+      <div id="breathBox" class="hidden text-center">
+        <div id="breathCircle" class="w-16 h-16 rounded-full bg-stone-800 border-2 border-stone-600 mx-auto flex items-center justify-center transition-all duration-1000">
+          <span id="breathLabel" class="text-xs text-stone-400">吸う</span>
+        </div>
+        <p class="text-xs text-stone-600 mt-1">ボックス呼吸（4-4-4-4）</p>
+      </div>
+    </div>
+
+    <div class="space-y-4 w-full lg:w-64">
+      <div>
+        <label class="block text-sm font-semibold text-stone-400 mb-2">セッション時間</label>
+        <div class="flex gap-2 flex-wrap">
+          <button class="dur-btn bg-stone-800 hover:bg-stone-700 text-stone-200 py-1 px-3 rounded-lg text-sm transition" data-min="5" aria-label="5分">5分</button>
+          <button class="dur-btn bg-stone-800 hover:bg-stone-700 text-stone-200 py-1 px-3 rounded-lg text-sm transition" data-min="10" aria-label="10分">10分</button>
+          <button class="dur-btn bg-stone-800 hover:bg-stone-700 text-stone-200 py-1 px-3 rounded-lg text-sm transition" data-min="20" aria-label="20分">20分</button>
+          <div class="flex items-center gap-1">
+            <input type="number" id="customMin" min="1" max="120" value="15" aria-label="カスタム分数"
+              class="w-14 bg-stone-800 border border-stone-700 rounded px-2 py-1 text-sm text-stone-200">
+            <button id="btnCustom" aria-label="カスタム設定"
+              class="bg-stone-700 hover:bg-stone-600 text-stone-200 py-1 px-2 rounded text-sm">設定</button>
+          </div>
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-stone-400 mb-2">インターバルベル</label>
+        <select id="bellInterval" aria-label="インターバルベル間隔"
+          class="w-full bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-200 text-sm">
+          <option value="0">なし</option>
+          <option value="1">1分ごと</option>
+          <option value="2">2分ごと</option>
+          <option value="5">5分ごと</option>
+        </select>
+      </div>
+      <div class="flex items-center gap-3">
+        <label class="text-sm text-stone-400" for="breathToggle">ボックス呼吸ガイド</label>
+        <button id="breathToggle" role="switch" aria-checked="false"
+          class="w-10 h-6 bg-stone-700 rounded-full relative transition"
+          aria-label="呼吸ガイド切替">
+          <span id="breathKnob" class="absolute left-1 top-1 w-4 h-4 bg-stone-400 rounded-full transition-all"></span>
+        </button>
+      </div>
+      <div class="flex gap-2">
+        <button id="btnStart" aria-label="開始"
+          class="flex-1 bg-stone-700 hover:bg-stone-600 text-stone-100 font-bold py-2 px-4 rounded-lg transition">
+          開始
+        </button>
+        <button id="btnPause" aria-label="一時停止"
+          class="flex-1 bg-stone-800 hover:bg-stone-700 text-stone-300 font-bold py-2 px-4 rounded-lg transition" disabled>
+          一時停止
+        </button>
+        <button id="btnReset" aria-label="リセット"
+          class="bg-stone-900 hover:bg-stone-800 text-stone-500 font-bold py-2 px-4 rounded-lg transition border border-stone-800">
+          リセット
+        </button>
+      </div>
+      <div id="statusMsg" class="text-sm text-stone-500 text-center"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const sandCanvas = document.getElementById('sand');
+const sc = sandCanvas.getContext('2d');
+let totalSecs = 10 * 60, remainSecs = totalSecs;
+let timerInterval = null, breathInterval = null, sandAnim = null;
+let running = false, paused = false;
+let selectedMin = 10;
+let breathOn = false, breathPhase = 0;
+const breathPhases = ['吸う','止める','吐く','止める'];
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playBell(freq = 432, dur = 1.5) {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = 'sine'; osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  osc.start(audioCtx.currentTime); osc.stop(audioCtx.currentTime + dur);
+}
+
+function formatTime(s) {
+  const m = Math.floor(s/60), sec = s%60;
+  return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+function updateRing() {
+  const frac = 1 - remainSecs / totalSecs;
+  const circumference = 553;
+  document.getElementById('progressRing').setAttribute('stroke-dashoffset', circumference * (1 - frac));
+}
+
+// Sand garden animation
+let sandT = 0;
+function drawSand() {
+  const W = sandCanvas.width, H = sandCanvas.height;
+  sc.fillStyle = '#1c1917';
+  sc.fillRect(0, 0, W, H);
+  // Draw sand grain texture
+  const waveCount = 8;
+  for (let w = 0; w < waveCount; w++) {
+    const baseY = (H / waveCount) * (w + 0.5);
+    const amp = 6 + w * 2;
+    const freq = 0.015 + w * 0.003;
+    const phase = sandT * 0.3 + w * 0.8;
+    const alpha = running ? 0.4 + 0.2 * Math.sin(sandT * 0.05 + w) : 0.25;
+    sc.beginPath();
+    for (let x = 0; x <= W; x += 2) {
+      const y = baseY + amp * Math.sin(x * freq + phase);
+      x === 0 ? sc.moveTo(x, y) : sc.lineTo(x, y);
+    }
+    const hue = 25 + w * 3;
+    sc.strokeStyle = `hsla(${hue}, 30%, 45%, ${alpha})`;
+    sc.lineWidth = 1;
+    sc.stroke();
+    // Dots on each wave
+    for (let x = 10; x < W; x += 20) {
+      const y = baseY + amp * Math.sin(x * freq + phase);
+      sc.beginPath();
+      sc.arc(x, y, 0.8, 0, Math.PI*2);
+      sc.fillStyle = `hsla(${hue}, 30%, 55%, ${alpha * 0.6})`;
+      sc.fill();
+    }
+  }
+  sandT++;
+  sandAnim = requestAnimationFrame(drawSand);
+}
+drawSand();
+
+function startBreath() {
+  breathPhase = 0;
+  const el = document.getElementById('breathLabel');
+  const circle = document.getElementById('breathCircle');
+  function tick() {
+    el.textContent = breathPhases[breathPhase];
+    const expanding = breathPhase === 0 || breathPhase === 1;
+    circle.style.transform = expanding ? 'scale(1.3)' : 'scale(1)';
+    circle.style.borderColor = ['#a8a29e','#78716c','#57534e','#78716c'][breathPhase];
+    breathPhase = (breathPhase + 1) % 4;
+  }
+  tick();
+  breathInterval = setInterval(tick, 4000);
+}
+
+function startTimer() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  running = true; paused = false;
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnPause').disabled = false;
+  document.getElementById('phaseLabel').textContent = '瞑想中';
+  const bellInt = parseInt(document.getElementById('bellInterval').value);
+  let elapsed = 0;
+  if (breathOn) { document.getElementById('breathBox').classList.remove('hidden'); startBreath(); }
+  timerInterval = setInterval(() => {
+    remainSecs--; elapsed++;
+    document.getElementById('timerDisplay').textContent = formatTime(remainSecs);
+    updateRing();
+    if (bellInt > 0 && elapsed % (bellInt * 60) === 0 && remainSecs > 0) playBell(528, 2);
+    if (remainSecs <= 0) {
+      clearInterval(timerInterval);
+      clearInterval(breathInterval);
+      running = false;
+      document.getElementById('phaseLabel').textContent = '完了';
+      document.getElementById('statusMsg').textContent = 'セッション完了。お疲れ様でした。';
+      document.getElementById('btnPause').disabled = true;
+      playBell(432, 3);
+      setTimeout(() => playBell(528, 3), 1500);
+    }
+  }, 1000);
+}
+
+function setDuration(min) {
+  selectedMin = min;
+  totalSecs = min * 60; remainSecs = totalSecs;
+  document.getElementById('timerDisplay').textContent = formatTime(remainSecs);
+  updateRing();
+  document.getElementById('statusMsg').textContent = `${min}分に設定しました`;
+  document.querySelectorAll('.dur-btn').forEach(b => {
+    b.classList.toggle('bg-stone-600', parseInt(b.dataset.min) === min);
+    b.classList.toggle('bg-stone-800', parseInt(b.dataset.min) !== min);
+  });
+  saveSettings();
+}
+
+document.querySelectorAll('.dur-btn').forEach(btn => {
+  btn.addEventListener('click', () => setDuration(parseInt(btn.dataset.min)));
+});
+document.getElementById('btnCustom').addEventListener('click', () => {
+  const v = parseInt(document.getElementById('customMin').value);
+  if (v >= 1 && v <= 120) setDuration(v);
+});
+document.getElementById('btnStart').addEventListener('click', startTimer);
+document.getElementById('btnPause').addEventListener('click', () => {
+  if (!paused) {
+    clearInterval(timerInterval); clearInterval(breathInterval);
+    paused = true;
+    document.getElementById('btnPause').textContent = '再開';
+    document.getElementById('phaseLabel').textContent = '一時停止';
+  } else {
+    startTimer(); paused = false;
+    document.getElementById('btnPause').textContent = '一時停止';
+  }
+});
+document.getElementById('btnReset').addEventListener('click', () => {
+  clearInterval(timerInterval); clearInterval(breathInterval);
+  running = false; paused = false;
+  remainSecs = totalSecs;
+  document.getElementById('timerDisplay').textContent = formatTime(remainSecs);
+  updateRing();
+  document.getElementById('phaseLabel').textContent = '待機中';
+  document.getElementById('statusMsg').textContent = '';
+  document.getElementById('btnStart').disabled = false;
+  document.getElementById('btnPause').disabled = true;
+  document.getElementById('btnPause').textContent = '一時停止';
+  document.getElementById('breathBox').classList.add('hidden');
+  document.getElementById('breathCircle').style.transform = 'scale(1)';
+});
+document.getElementById('breathToggle').addEventListener('click', function() {
+  breathOn = !breathOn;
+  this.setAttribute('aria-checked', breathOn);
+  const knob = document.getElementById('breathKnob');
+  knob.style.left = breathOn ? '1.25rem' : '0.25rem';
+  this.classList.toggle('bg-stone-500', breathOn);
+  saveSettings();
+});
+
+function saveSettings() {
+  localStorage.setItem('zen-settings', JSON.stringify({ min: selectedMin, bellInt: document.getElementById('bellInterval').value, breathOn }));
+}
+function loadSettings() {
+  const s = JSON.parse(localStorage.getItem('zen-settings') || 'null');
+  if (s) {
+    setDuration(s.min);
+    document.getElementById('bellInterval').value = s.bellInt || 0;
+    if (s.breathOn) document.getElementById('breathToggle').click();
+  } else { setDuration(10); }
+}
+loadSettings();
+</script>
+</body>
+</html>
